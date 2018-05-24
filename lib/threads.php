@@ -46,13 +46,14 @@ class Threads
    {
       if (!file_exists($filename))
       {
-         throw new ThreadsException('FILE_NOT_FOUND');
+         DebMes("Cannot start thread '$filename' -- FILE NOT FOUND");
+         return false;
       }
 
       $params = addcslashes(serialize($params), '"');
 
       //if (defined('LOG_CYCLES') && LOG_CYCLES=='1') {
-      $fileToWrite = DOC_ROOT . '/debmes/log_' . date('Y-m-d') . '-' . basename($filename) . '.txt';
+      $fileToWrite = DOC_ROOT . '/cms/debmes/log_' . date('Y-m-d') . '-' . basename($filename) . '.txt';
       $command = $this->phpPath . ' -q ' . $filename . ' --params "' . $params . '">>' . $fileToWrite;
 
       if (!IsWindowsOS()) {
@@ -93,8 +94,10 @@ class Threads
       if (IsWindowsOS())
          throw new ThreadsException('FOR_LINUX_ONLY');
 
-      if (!file_exists($filename))
-         throw new ThreadsException('FILE_NOT_FOUND');
+      if (!file_exists($filename)) {
+         DebMes("Cannot start thread '$filename' -- FILE NOT FOUND");
+         return false;
+      }
 
       $params  = addcslashes(serialize($params), '"');
       $command = 'DISPLAY=:' . $display . ' ' . $this->phpPath . ' ' . $filename . ' --params "' . $params . '"';

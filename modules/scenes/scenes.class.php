@@ -21,7 +21,7 @@ class scenes extends module {
 *
 * @access private
 */
-function scenes() {
+function __construct() {
   $this->name="scenes";
   $this->title="<#LANG_MODULE_SCENES#>";
   $this->module_category="<#LANG_SECTION_OBJECTS#>";
@@ -138,11 +138,11 @@ function run() {
   */
    require_once ROOT.'lib/smarty/Smarty.class.php';
    $smarty = new Smarty;
-   $smarty->setCacheDir(ROOT.'cached/template_c');
+   $smarty->setCacheDir(ROOT.'cms/cached/template_c');
 
    $smarty->setTemplateDir(ROOT.'./templates')
-          ->setCompileDir(ROOT.'./cached/templates_c')
-          ->setCacheDir(ROOT.'./cached');
+          ->setCompileDir(ROOT.'./cms/cached/templates_c')
+          ->setCacheDir(ROOT.'./cms/cached');
 
    $smarty->debugging = false;
    $smarty->caching = true;
@@ -152,8 +152,14 @@ function run() {
     $smarty->assign($k, $v);
    }
 
-
-   @$this->result=$smarty->fetch(DIR_TEMPLATES.'scenes/scenes.tpl');
+   $template = DIR_TEMPLATES.'scenes/scenes.tpl';
+   if (defined('ALTERNATIVE_TEMPLATES')) {
+    $alt_path = str_replace('templates/', ALTERNATIVE_TEMPLATES . '/', $template);
+    if (file_exists($alt_path)) {
+     $template = $alt_path;
+    }
+   }
+   @$this->result=$smarty->fetch($template);
 
 
 
@@ -353,7 +359,8 @@ function admin(&$out) {
  }
 
  if ($this->view_mode=='import') {
-  $this->import_scene();
+  global $file;
+  $this->import_scene($file);
  }
 
 
@@ -368,13 +375,13 @@ function admin(&$out) {
  * @access public
  */
  function export_scene($id) {
-  $rec=SQLSelectOne("SELECT * FROM scenes WHERE ID='".(int)$id."'"); 
+  $rec=SQLSelectOne("SELECT * FROM scenes WHERE ID='".(int)$id."'");
+  unset($rec['SYSTEM']);
   //elements
   $elements=SQLSelect("SELECT * FROM elements WHERE SCENE_ID='".(int)$id."'");
   $total=count($elements);
   for($i=0;$i<$total;$i++) {
    $elm_id=$elements[$i]['ID'];
-   unset($elements[$i]['ID']);
    unset($elements[$i]['SCENE_ID']);
    $states=SQLSelect("SELECT * FROM elm_states WHERE ELEMENT_ID='".(int)$elm_id."'");
    $totalE=count($states);
@@ -434,13 +441,15 @@ function admin(&$out) {
 *
 * @access public
 */
- function import_scene() {
-  global $file;
-  global $overwrite;
-
+ function import_scene($file, $system = '') {
   $data=unserialize(LoadFile($file));
-
   if ($data['SCENE_DATA']) {
+   if ($system!='') {
+    $old_rec=SQLSelectOne("SELECT ID FROM scenes WHERE SYSTEM LIKE '".DBSafe($system)."'");
+    if ($old_rec['ID']) {
+     return;
+    }
+   }
    $rec=$data['SCENE_DATA'];
    if (!$rec['WALLPAPER']) {
     unset($rec['WALLPAPER']);
@@ -451,18 +460,27 @@ function admin(&$out) {
    unset($rec['ELEMENTS']);
    $rec['ID']=SQLInsert('scenes', $rec);
    $total=count($elements);
+   $seen_elements=array();
    for($i=0;$i<$total;$i++) {
     $states=$elements[$i]['STATES'];
+    $old_element_id=$elements[$i]['ID'];
     unset($elements[$i]['STATES']);
     unset($elements[$i]['ID']);
     $elements[$i]['SCENE_ID']=$rec['ID'];
     $elements[$i]['ID']=SQLInsert('elements', $elements[$i]);
+    $seen_elements[$old_element_id]=$elements[$i]['ID'];
     $totalE=count($states);
     for($iE=0;$iE<$totalE;$iE++) {
      unset($states[$iE]['ID']);
      $states[$iE]['ELEMENT_ID']=$elements[$i]['ID'];
      SQLInsert('elm_states', $states[$iE]);
     }
+   }
+   $elements=SQLSelect("SELECT * FROM elements WHERE SCENE_ID=".$rec['ID']." AND CONTAINER_ID!=0");
+   $total = count($elements);
+   for ($i = 0; $i < $total; $i++) {
+    $elements[$i]['CONTAINER_ID']=$seen_elements[$elements[$i]['CONTAINER_ID']];
+    SQLUpdate('elements',$elements[$i]);
    }
    if ($data['BACKGROUND_IMAGE']) {
     $filename=ROOT.$rec['BACKGROUND'];
@@ -616,6 +634,7 @@ function usual(&$out) {
       for($i=0;$i<$total;$i++) {
        if (is_array($elements[$i]['STATES'])) {
         foreach($elements[$i]['STATES'] as $st) {
+         if ($elements[$i]['TYPE']=='container') unset($st['HTML']);
          $states[]=$st;
         }
        }
@@ -683,6 +702,7 @@ function usual(&$out) {
       for($i=0;$i<$total;$i++) {
        if (is_array($elements[$i]['STATES'])) {
         foreach($elements[$i]['STATES'] as $st) {
+         if ($elements[$i]['TYPE']=='container') unset($st['HTML']);
          $states[]=$st;
         }
        }
@@ -1160,6 +1180,17 @@ function usual(&$out) {
          $elements[$ie]['STATES']=$states;
          $res2[]=$elements[$ie];
        }
+
+       if (is_array($elements[$ie]['STATES'])) {
+        $total_states=count($elements[$ie]['STATES']);
+        for($is=0;$is<$total_states;$is++) {
+         if ($elements[$ie]['TYPE']=='container') {
+          unset($elements[$ie]['STATES'][$is]['HTML']);
+         }
+        }
+       }
+
+
       }
       return $res2;
 
@@ -1216,6 +1247,9 @@ function usual(&$out) {
        if ($elements[$ie]['TYPE']=='container') {
         if (!is_array($options) || $options['ignore_sub']!=1) {
          startMeasure('getSubElements');
+         $elements[$ie]['STATE']=$elements[$ie]['STATES'][0]['STATE'];
+         $elements[$ie]['STATE_ID']=$elements[$ie]['STATES'][0]['ID'];
+
          if (checkAccess('scene_elements', $elements[$ie]['ID'])) {
           $elements[$ie]['ELEMENTS']=$this->getElements("CONTAINER_ID=".(int)$elements[$ie]['ID'], $options);
          } else {
@@ -1275,25 +1309,24 @@ function usual(&$out) {
 
   function getCSSImage($type, $style) {
    $styles=$this->getStyles($type);
-   $total=count($styles);
-   for($i=0;$i<$total;$i++) {
-    if ($styles[$i]['TITLE']==$style) {
-     return $styles[$i]['IMAGE'];
+   if (is_array($styles)) {
+    $total=count($styles);
+    for($i=0;$i<$total;$i++) {
+     if ($styles[$i]['TITLE']==$style) {
+      return $styles[$i]['IMAGE'];
+     }
     }
    }
 
    $styles=$this->getStyles('common');
-   $total=count($styles);
-   for($i=0;$i<$total;$i++) {
-    if ($styles[$i]['TITLE']==$style) {
-     return $styles[$i]['IMAGE'];
+   if (is_array($styles)) {
+    $total=count($styles);
+    for($i=0;$i<$total;$i++) {
+     if ($styles[$i]['TITLE']==$style) {
+      return $styles[$i]['IMAGE'];
+     }
     }
    }
-
-   /*
-   print_r($styles);
-   exit;
-   */
   }
 
 
@@ -1329,149 +1362,160 @@ function usual(&$out) {
   return array_merge($res1, $res2); 
  }
 
- function getStyles($type='') {
+function getStyles($type = '')
+{
+   startMeasure('getStyles');
+   $path = ROOT . 'cms/scenes/styles/' . $type;
 
-  startMeasure('getStyles');
-  $path=ROOT.'cms/scenes/styles/'.$type;
+   if (!is_dir($path))
+      return;
 
-  if (!is_dir($path)) {
-   return;
-  }
+   $enable_style_caching = false;
+   $cache_file = ROOT . 'cms/cached/styles_' . $type . '.txt';
 
-   $cache_file=ROOT.'cached/styles_'.$type.'.txt';
+   if ($enable_style_caching && file_exists($cache_file) && (time() - filemtime($cache_file)) < 1 * 60 * 60)
+   {
+      $styles_recs = unserialize(LoadFile($cache_file));
+   }
+   else
+   {
+      startMeasure('openAndReadDir');
+   
+      if ($handle = opendir($path))
+      {
+         $styles_recs = array();
+    
+         while (false !== ($entry = readdir($handle)))
+         {
+            if (preg_match('/(.+?)\.png$/is', $entry, $m))
+            {
+               $style = $m[1];
+               $style = preg_replace('/^i\_/', '', $style);
 
-   //if (file_exists($cache_file) && (time()-filemtime($cache_file)<1*60*60)) {
-   // $styles_recs=unserialize(LoadFile($cache_file));
-   //} else {
+        
+               if (preg_match('/^ign_/', $style))
+                  continue;
 
-
-
-   startMeasure('openAndReadDir');
-   if ($handle = opendir($path)) {
-    $style_recs=array();
-    while (false !== ($entry = readdir($handle))) {
-       if (preg_match('/(.+?)\.png$/is', $entry, $m)) {
-        $style=$m[1];
-        $style=preg_replace('/^i\_/', '', $style);
-
-        if (preg_match('/^ign_/', $style)) {
-         continue;
-        }
-
-        if ($type=='common') {
-         $entry='../common/'.$entry;
-        }
-
-
-        $has_low=0;
-        if (preg_match('/\_lo$/', $style)) {
-         $style=preg_replace('/\_lo$/', '', $style);
-         $has_low=$entry;
-        }
-        $has_high=0;
-        if (preg_match('/\_hi$/', $style)) {
-         $style=preg_replace('/\_hi$/', '', $style);
-         $has_high=$entry;
-        }
-
-        $has_on=0;
-        if (preg_match('/\_on$/', $style)) {
-         $style=preg_replace('/\_on$/', '', $style);
-         $has_on=$entry;
-        }
-        $has_off=0;
-        if (preg_match('/\_off$/', $style)) {
-         $style=preg_replace('/\_off$/', '', $style);
-         $has_off=$entry;
-        }
-
-        $has_mid=0;
-        if (preg_match('/\_mid$/', $style)) {
-         $style=preg_replace('/\_mid$/', '', $style);
-         $has_mid=$entry;
-        }
-
-        $has_na=0;
-        if (preg_match('/\_na$/', $style)) {
-         $style=preg_replace('/\_na$/', '', $style);
-         $has_na=$entry;
-        }
+        
+               if ($type == 'common')
+                  $entry = '../common/' . $entry;
 
 
+               $has_low = 0;
+        
+               if (preg_match('/\_lo$/', $style))
+               {
+                  $style = preg_replace('/\_lo$/', '', $style);
+                  $has_low = $entry;
+               }
+        
+               $has_high = 0;
+        
+               if (preg_match('/\_hi$/', $style))
+               {
+                  $style = preg_replace('/\_hi$/', '', $style);
+                  $has_high = $entry;
+               }
 
-        if (is_array($this->all_styles) && !$this->all_styles[$style]) {
-         continue;
-        }
+               $has_on = 0;
+        
+               if (preg_match('/\_on$/', $style))
+               {
+                  $style = preg_replace('/\_on$/', '', $style);
+                  $has_on = $entry;
+               }
+        
+               $has_off = 0;
+               
+               if (preg_match('/\_off$/', $style))
+               {
+                  $style = preg_replace('/\_off$/', '', $style);
+                  $has_off = $entry;
+               }
 
+               $has_mid = 0;
+            
+               if (preg_match('/\_mid$/', $style))
+               {
+                  $style = preg_replace('/\_mid$/', '', $style);
+                  $has_mid = $entry;
+               }
 
-        $styles_recs[$style]['TITLE']=$style;
-        if ($has_low) {
-         $styles_recs[$style]['HAS_LOW']=$has_low;
-        }
-        if ($has_high) {
-         $styles_recs[$style]['HAS_HIGH']=$has_high;
-        }
-        if ($has_on) {
-         $styles_recs[$style]['HAS_ON']=$has_on;
-        }
-        if ($has_off) {
-         $styles_recs[$style]['HAS_OFF']=$has_off;
-        }
-        if ($has_mid) {
-         $styles_recs[$style]['HAS_MID']=$has_mid;
-        }
-        if ($has_na) {
-         $styles_recs[$style]['HAS_NA']=$has_na;
-        }
+               $has_na = 0;
+               
+               if (preg_match('/\_na$/', $style))
+               {
+                  $style=preg_replace('/\_na$/', '', $style);
+                  $has_na=$entry;
+               }
 
-        if (!$has_low && !$has_high && !$has_on && !$has_off && !$has_mid && !$has_na) {
-         $styles_recs[$style]['HAS_DEFAULT']=$entry;
-        }
+               if (is_array($this->all_styles) && !$this->all_styles[$style])
+                  continue;
 
-        if (!$styles_recs[$style]['HAS_DEFAULT'] && $has_on) {
-         $styles_recs[$style]['HAS_DEFAULT']=$has_on;
-        }
+               $styles_recs[$style]['TITLE'] = $style;
+        
+               if ($has_low)
+                  $styles_recs[$style]['HAS_LOW'] = $has_low;
+        
+               if ($has_high)
+                  $styles_recs[$style]['HAS_HIGH'] = $has_high;
+        
+               if ($has_on)
+                  $styles_recs[$style]['HAS_ON'] = $has_on;
+        
+               if ($has_off)
+                  $styles_recs[$style]['HAS_OFF'] = $has_off;
+        
+               if ($has_mid)
+                  $styles_recs[$style]['HAS_MID'] = $has_mid;
+            
+               if ($has_na)
+                  $styles_recs[$style]['HAS_NA'] = $has_na;
 
-       }
-    }
-    closedir($handle);
+               if (!$has_low && !$has_high && !$has_on && !$has_off && !$has_mid && !$has_na)
+                  $styles_recs[$style]['HAS_DEFAULT'] = $entry;
 
-    if (is_array($styles_recs)) {
-     foreach($styles_recs as $k=>$v) {
-      if (!$styles_recs[$k]['IMAGE'] && file_exists($path.'/'.$v['TITLE'].'.png')) {
-       $styles_recs[$k]['IMAGE']=$type.'/'.$v['TITLE'].'.png';
+               if (!$styles_recs[$style]['HAS_DEFAULT'] && $has_on)
+                  $styles_recs[$style]['HAS_DEFAULT'] = $has_on;
+            }
+         }
+    
+         closedir($handle);
+
+         if (is_array($styles_recs))
+         {
+            foreach($styles_recs as $k => $v)
+            {
+               if (!$styles_recs[$k]['IMAGE'] && file_exists($path . '/' . $v['TITLE'] . '.png'))
+                  $styles_recs[$k]['IMAGE'] = $type . '/' . $v['TITLE'] . '.png';
+
+               if (!$styles_recs[$k]['IMAGE'] && file_exists($path . '/i_' . $v['TITLE'] . '.png'))
+                  $styles_recs[$k]['IMAGE'] = $type . '/i_' . $v['TITLE'] . '.png';
+
+               if (!$styles_recs[$k]['IMAGE'] && file_exists($path . '/i_' . $v['TITLE'] . '_on.png'))
+                  $styles_recs[$k]['IMAGE']=$type.'/i_'.$v['TITLE'].'_on.png';
+            }
+         }
+
+         if ($enable_style_caching && count($styles_recs) > 0)
+            SaveFile($cache_file, serialize($styles_recs));
+    
+         endMeasure('openAndReadDir');
       }
-      if (!$styles_recs[$k]['IMAGE'] && file_exists($path.'/i_'.$v['TITLE'].'.png')) {
-       $styles_recs[$k]['IMAGE']=$type.'/i_'.$v['TITLE'].'.png';
-      }
-
-      if (!$styles_recs[$k]['IMAGE'] && file_exists($path.'/i_'.$v['TITLE'].'_on.png')) {
-       $styles_recs[$k]['IMAGE']=$type.'/i_'.$v['TITLE'].'_on.png';
-      }
-     }
-    }
-
-    //SaveFile($cache_file, serialize($styles_recs));
-    endMeasure('openAndReadDir');
-
-    }
-
-   //}
+   }
 
 
-    if (is_array($styles_recs)) {
-     $res_styles=array();
-     foreach($styles_recs as $k=>$v) {
-      $res_styles[]=$v;
-     }
-    }
-
-
-
+   if (is_array($styles_recs))
+   {
+      $res_styles = array();
+     
+      foreach($styles_recs as $k => $v)
+         $res_styles[] = $v;
+   }
+   
    endMeasure('getStyles');
+   
    return $res_styles;
-
-  
  }
 
 
@@ -1519,24 +1563,33 @@ function usual(&$out) {
    //DebMes("total states: ".$total);
 
    for($i=0;$i<$total;$i++) {
+
+    // linked object.property
     if ($states[$i]['LINKED_OBJECT'] && $states[$i]['LINKED_PROPERTY']) {
      $properties[]=array('PROPERTY'=>mb_strtolower($states[$i]['LINKED_OBJECT'].'.'.$states[$i]['LINKED_PROPERTY'], 'UTF-8'), 'STATE_ID'=>$states[$i]['ID']);
     }
 
+    //html content properties
     $content=$states[$i]['HTML'];
     $content=preg_replace('/%([\w\d\.]+?)\.([\w\d\.]+?)\|(\d+)%/uis', '%\1.\2%', $content);
     $content=preg_replace('/%([\w\d\.]+?)\.([\w\d\.]+?)\|".+?"%/uis', '%\1.\2%', $content);
-
     if (preg_match_all('/%([\w\d\.]+?)%/is', $content, $m)) {
      $totalm=count($m[1]);
      for($im=0;$im<$totalm;$im++) {
        $properties[]=array('PROPERTY'=>mb_strtolower($m[1][$im], 'UTF-8'), 'STATE_ID'=>$states[$i]['ID']);
      }
     }
-    //to-do: add %random% support
+
+    // advanced conditions properties
+    if ($states[$i]['IS_DYNAMIC']==2 && preg_match_all('/([\w\d\.]+?\.[\w\d\.]+)/is',$states[$i]['CONDITION_ADVANCED'],$mc)) {
+     $totala = count($mc[1]);
+     for ($ia = 0; $ia < $totala; $ia++) {
+      $properties[]=array('PROPERTY'=>mb_strtolower($mc[1][$ia], 'UTF-8'), 'STATE_ID'=>$states[$i]['ID']);
+     }
+    }
+
    }
 
-   //DebMes("Getting watched properties for ".serialize($properties));
    return $properties;
   }
 
@@ -1563,6 +1616,7 @@ elm_states - Element states
  scenes: AUTO_SCALE int(3) NOT NULL DEFAULT '0'
  scenes: WALLPAPER_FIXED int(3) NOT NULL DEFAULT '0'
  scenes: WALLPAPER_NOREPEAT int(3) NOT NULL DEFAULT '0'
+ scenes: SYSTEM varchar(255) NOT NULL DEFAULT '' 
 
  elements: ID int(10) unsigned NOT NULL auto_increment
  elements: SCENE_ID int(10) NOT NULL DEFAULT '0'

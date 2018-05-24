@@ -16,7 +16,7 @@
 
 
  $sections=array();
- $filters=array('', 'scenes', 'calendar', 'growl', 'twitter', 'pushover', 'pushbullet', 'hook', 'backup', 'logger');
+ $filters=array('', 'scenes', 'calendar', 'hook', 'backup');
  $total=count($filters);
  for($i=0;$i<$total;$i++) {
   $rec=array();
@@ -35,44 +35,6 @@
   }
  }
  $out['SECTIONS']=$sections;
-
- if ($this->filter_name=='' && !defined('SETTINGS_TTS_ENGINE')) {
-  if (defined('SETTINGS_TTS_GOOGLE')) {
-   SQLExec('DELETE FROM settings WHERE NAME="TTS_GOOGLE"');
-  }
-  $tmp=SQLSelectOne("SELECT ID FROM settings WHERE NAME='TTS_ENGINE' AND DATA LIKE '%yandex%'");
-  if (!$tmp['ID']) {
-   SQLExec('DELETE FROM settings WHERE NAME="TTS_ENGINE"');
-   $tmp=array();
-   $tmp['NAME']='TTS_ENGINE';
-   $tmp['TYPE']='select';
-   $tmp['PRIORITY']=60;
-   $tmp['TITLE']='Text-to-speech engine';
-   $tmp['DEFAULTVALUE']='';
-   $tmp['DATA']='=Default|google=Google|yandex=Yandex';
-   SQLInsert('settings', $tmp);
-  }
- }
-
- if ($this->filter_name=='' && !defined('SETTINGS_YANDEX_TTS_KEY')) {
-  $options=array(
-   'YANDEX_TTS_KEY'=>'Yandex TTS key'
-  );
-
-  foreach($options as $k=>$v) {
-   $tmp=SQLSelectOne("SELECT ID FROM settings WHERE NAME LIKE '".$k."'");
-   if (!$tmp['ID']) {
-    $tmp=array();
-    $tmp['NAME']=$k;
-    $tmp['TITLE']=$v;
-    $tmp['TYPE']='text';
-    $tmp['PRIORITY']=55;
-    $tmp['DEFAULTVALUE']='';
-    SQLInsert('settings', $tmp);
-   }
-  }
- }
-
 
  if ($this->filter_name=='' && !defined('SETTINGS_GENERAL_ALICE_NAME')) {
   $options=array(
@@ -113,26 +75,6 @@
     SQLInsert('settings', $tmp);
    }
   }
- }
-
- if ($this->filter_name=='logger' && !defined('SETTINGS_LOGGER_DESTINATION')) {
-
-  $options=array(
-   'LOGGER_DESTINATION'=>'Write log to (file/database/both)'
-  );
-  foreach($options as $k=>$v) {
-   $tmp=SQLSelectOne("SELECT ID FROM settings WHERE NAME LIKE '".$k."'");
-   if (!$tmp['ID']) {
-    $tmp=array();
-    $tmp['NAME']=$k;
-    $tmp['TITLE']=$v;
-    $tmp['TYPE']='text';
-    SQLInsert('settings', $tmp);
-   }
-  }
-  $query = "CREATE TABLE IF NOT EXISTS `log4php_log` (`timestamp` DATETIME, `logger` VARCHAR(256), `level` VARCHAR(32), `message` VARCHAR(4000), `thread` INTEGER, `file` VARCHAR(255), `line` VARCHAR(10));";
-  SQLExec($query);
-
  }
 
  if ($this->filter_name=='scenes' && !defined('SETTINGS_SCENES_VERTICAL_NAV')) {
@@ -210,29 +152,6 @@
 
  }
 
- if ($this->filter_name=='pushbullet' && !defined('SETTINGS_PUSHBULLET_PREFIX')) {
-  $options=array(
-   'PUSHBULLET_KEY'=>'Pushbullet API Key', 
-   'PUSHBULLET_LEVEL'=>'Pushbullet message minimum level', 
-   'PUSHBULLET_DEVICE_ID'=>'Pushbullet Device ID (optional)',
-   'PUSHBULLET_PREFIX'=>'Pushbullet notifiaction prefix (optional)'
-  );
-  foreach($options as $k=>$v) {
-   $tmp=SQLSelectOne("SELECT ID FROM settings WHERE NAME LIKE '".$k."'");
-   if (!$tmp['ID']) {
-    $tmp=array();
-    $tmp['NAME']=$k;
-    $tmp['TITLE']=$v;
-    $tmp['TYPE']='text';
-    if ($k=='PUSHBULLET_LEVEL') {
-     $tmp['VALUE']=1;
-     $tmp['DEFAULTVALUE']=1;
-    }
-    SQLInsert('settings', $tmp);
-   }
-  }
- }
-
 // if (!empty($options)) {
 // }
 
@@ -305,14 +224,22 @@
    $total=count($res);
    for($i=0;$i<$total;$i++) {
     // some action for every record if required
+
     
     // some action for every record if required
     if ($this->mode=='update') {
      global ${'value_'.$res[$i]['ID']};
      global ${'notes_'.$res[$i]['ID']};
 
-     if (!isset(${'value_'.$res[$i]['ID']})) continue;
+     if ($res[$i]['TYPE']=='json' && preg_match('/^hook/is',$res[$i]['NAME'])) {
+      $data = json_decode($res[$i]['VALUE'], true);
+      foreach($data as $k=>$v) {
+       $data[$k]['priority']=gr($k.'_'.$res[$i]['ID'].'_priority','int');
+      }
+      ${'value_'.$res[$i]['ID']} = json_encode($data);
+     }
 
+     if (!isset(${'value_'.$res[$i]['ID']})) continue;
      $all_settings[$res[$i]['NAME']]=${'value_'.$res[$i]['ID']};
      $res[$i]['VALUE']=${'value_'.$res[$i]['ID']};
      $res[$i]['NOTES']=htmlspecialchars(${'notes_'.$res[$i]['ID']});
@@ -329,13 +256,29 @@
       list($ov, $ot)=explode('=', $v);
       $res[$i]['OPTIONS'][]=array('OPTION_TITLE'=>$ot, 'OPTION_VALUE'=>$ov);
      }
+    } elseif ($res[$i]['TYPE']=='json' && preg_match('/^hook/is',$res[$i]['NAME'])) {
+     $data=json_decode($res[$i]['VALUE'],true);
+     if (is_array($data)) {
+      foreach($data as $k=>$v) {
+       $row=array('OPTION_TITLE'=>$k, 'FILTER'=>$v['filter'],'PRIORITY'=>(int)$v['priority']);
+       $res[$i]['OPTIONS'][]=$row;
+      }
+     }
+     if (is_array($res[$i]['OPTIONS'])) {
+      usort($res[$i]['OPTIONS'], function ($a,$b) {
+       if ($a['PRIORITY'] == $b['PRIORITY']) {
+        return 0;
+       }
+       return ($a['PRIORITY'] > $b['PRIORITY']) ? -1 : 1;
+      });
+     }
+
     }
-
-
     if ($res[$i]['VALUE']==$res[$i]['DEFAULTVALUE']) {
      $res[$i]['ISDEFAULT']='1';
     }
     $res[$i]['VALUE']=htmlspecialchars($res[$i]['VALUE']);
+    $res[$i]['HINT_NAME']='settings'.str_replace('_','',$res[$i]['NAME']);
    }
    $out['RESULT']=$res;
   }
@@ -344,13 +287,15 @@
   
     // some action for every record if required
   if ($this->mode=='update') {
+   /*
    if ($all_settings['GROWL_ENABLE']) {
     include_once(ROOT.'lib/growl/growl.gntp.php');
     $growl = new Growl($all_settings['GROWL_HOST'], $all_settings['GROWL_PASSWORD']);
     $growl->setApplication('MajorDoMo','Notifications');
-    $growl->registerApplication('http://connect.smartliving.ru/img/logo.png');
+    $growl->registerApplication('https://connect.smartliving.ru/img/logo.png');
     $growl->notify('Test!');
    }
+   */
    $this->redirect("?updated=1&filter_name=".$this->filter_name);
   }
 

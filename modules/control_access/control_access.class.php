@@ -11,7 +11,7 @@
 class control_access extends module {
  var $id;
 // --------------------------------------------------------------------
- function control_access() {
+ function __construct() {
   // setting module name
   $this->name="control_access";
   $this->title="Control Access";
@@ -320,6 +320,10 @@ function getParams() {
 // --------------------------------------------------------------------
    function checkAccess($action = "", $log = 0)
    {
+
+      if (defined('NO_DATABASE_CONNECTION')) {
+       return 1;
+      }
       global $session;
 
       if ($session->data['USER_ID'] == 1) 

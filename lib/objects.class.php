@@ -37,6 +37,7 @@ function addClass($class_name, $parent_class = '')
       $class['TITLE']     = $class_name;
       $class['PARENT_ID'] = (int)$parent_class_id;
       $class['ID']        = SQLInsert('classes', $class);
+      return $class['ID'];
    }
 }
 
@@ -52,8 +53,11 @@ function addClass($class_name, $parent_class = '')
     return '';
    }
    $class_file_path=DIR_TEMPLATES.'classes/views/'.$class['TITLE'].'.html';
+   $alt_class_file_path=ROOT.'templates_alt/classes/views/'.$class['TITLE'].'.html';
    if ($class['TEMPLATE']!='') {
     $data=$class['TEMPLATE'];
+   } elseif (file_exists($alt_class_file_path)) {
+       $data=LoadFile($alt_class_file_path);
    } elseif (file_exists($class_file_path)) {
     $data=LoadFile($class_file_path);
    } elseif ($class['PARENT_ID']) {
@@ -82,7 +86,12 @@ function addClass($class_name, $parent_class = '')
 function getObjectClassTemplate($object_name) {
     $object=getObject($object_name);
     $data=getClassTemplate((int)$object->class_id);
-    $data=preg_replace('/%\.(\w+?)/', '%'.$object_name.'.\1'.'', $data);
+    $data=preg_replace('/%\.object_title%/uis', $object_name, $data);
+    $data=preg_replace('/%\.object_id%/uis', $object->id, $data);
+    $data=preg_replace('/%\.object_description%/uis', $object->description, $data);
+    //$data=preg_replace('/%\.([\w\-]+?)%/uis', '%'.$object_name.'.\1'.'%', $data);
+    $data=preg_replace('/%\.(.+?)%/uis', '%'.$object_name.'.\1'.'%', $data);
+    $data=preg_replace('/%\.(.+?)%/uis', '%'.$object_name.'.\1'.'%', $data);
     return $data;
 }
 
@@ -394,8 +403,6 @@ function getObject($name)
    return 0;
 }
 
-
-
 /**
  * Summary of getObjectsByProperty
  * @param mixed $property_name Property name
@@ -403,6 +410,10 @@ function getObject($name)
  */
 function getObjectsByProperty($property_name, $condition='', $condition_value='') 
 {
+    if ($condition_value=='' && $condition!='') {
+        $condition_value=$condition;
+        $condition='==';
+    }
   $pRecs=SQLSelect("SELECT ID FROM properties WHERE TITLE LIKE '".DBSafe($property_name)."'");
   $total=count($pRecs);
   if (!$total) {
@@ -501,6 +512,10 @@ function getObjectsByClass($class_name)
 
 
 function getClassProperties($class_id, $def='') {
+
+    global $cached_class_properties;
+    if (isset($cached_class_properties[$class_id])) return $cached_class_properties[$class_id];
+
     $class=SQLSelectOne("SELECT ID, PARENT_ID FROM classes WHERE (ID='".(int)$class_id."' OR TITLE LIKE '".DBSafe($class_id)."')");
     $properties=SQLSelect("SELECT properties.*, classes.TITLE as CLASS_TITLE FROM properties LEFT JOIN classes ON properties.CLASS_ID=classes.ID WHERE CLASS_ID='".$class['ID']."' AND OBJECT_ID=0");
     $res=$properties;
@@ -527,10 +542,12 @@ function getClassProperties($class_id, $def='') {
             }
         }
     }
+    $cached_class_properties[$class_id]=$res;
     return $res;
 }
 
 function getKeyData($object_id) {
+    startMeasure('getKeyData');
     $object_rec=SQLSelectOne("SELECT ID,TITLE,CLASS_ID FROM objects WHERE ID=".(int)$object_id);
     $props=getClassProperties($object_rec['CLASS_ID']);
     $add_description='';
@@ -542,6 +559,7 @@ function getKeyData($object_id) {
             }
         }
     }
+    endMeasure('getKeyData');
     return $add_description;
 }
 
@@ -645,8 +663,14 @@ function getHistory($varname, $start_time, $stop_time = 0) {
   // Get hist val id
   $id = getHistoryValueId($varname);
 
+    if (defined('SEPARATE_HISTORY_STORAGE') && SEPARATE_HISTORY_STORAGE == 1) {
+        $table_name = createHistoryTable($id);
+    } else {
+        $table_name = 'phistory';
+    }
+
   // Get data
-  return SQLSelect("SELECT VALUE, ADDED FROM phistory WHERE VALUE_ID='".$id."' AND ADDED>=('".date('Y-m-d H:i:s', $start_time)."') AND ADDED<=('".date('Y-m-d H:i:s', $stop_time)."')");
+  return SQLSelect("SELECT VALUE, ADDED FROM $table_name WHERE VALUE_ID='".$id."' AND ADDED>=('".date('Y-m-d H:i:s', $start_time)."') AND ADDED<=('".date('Y-m-d H:i:s', $stop_time)."') ORDER BY ADDED");
 }
 
 /**
@@ -663,8 +687,14 @@ function getHistoryMin($varname, $start_time, $stop_time = 0) {
         // Get hist val id
         $id = getHistoryValueId($varname);
 
+    if (defined('SEPARATE_HISTORY_STORAGE') && SEPARATE_HISTORY_STORAGE == 1) {
+        $table_name = createHistoryTable($id);
+    } else {
+        $table_name = 'phistory';
+    }
+
         // Get data
-        $data = SQLSelectOne("SELECT MIN(VALUE+0.0) AS VALUE FROM phistory ".
+        $data = SQLSelectOne("SELECT MIN(VALUE+0.0) AS VALUE FROM $table_name ".
                 "WHERE VALUE != \"\" AND VALUE_ID='".$id."' AND ADDED>=('".date('Y-m-d H:i:s', $start_time)."') AND ADDED<=('".date('Y-m-d H:i:s', $stop_time)."')");
         
         if (!$data['VALUE'])
@@ -686,9 +716,13 @@ function getHistoryMax($varname, $start_time, $stop_time = 0) {
         
         // Get hist val id
   $id = getHistoryValueId($varname);
-
+    if (defined('SEPARATE_HISTORY_STORAGE') && SEPARATE_HISTORY_STORAGE == 1) {
+        $table_name = createHistoryTable($id);
+    } else {
+        $table_name = 'phistory';
+    }
         // Get data
-        $data = SQLSelectOne("SELECT MAX(VALUE+0.0) AS VALUE FROM phistory ".
+        $data = SQLSelectOne("SELECT MAX(VALUE+0.0) AS VALUE FROM $table_name ".
                 "WHERE VALUE != \"\" AND  VALUE_ID='".$id."' AND ADDED>=('".date('Y-m-d H:i:s', $start_time)."') AND ADDED<=('".date('Y-m-d H:i:s', $stop_time)."')");
         if (!$data['VALUE'])
                 return false;
@@ -709,9 +743,13 @@ function getHistoryCount($varname, $start_time, $stop_time = 0) {
         
         // Get hist val id
   $id = getHistoryValueId($varname);
-
+    if (defined('SEPARATE_HISTORY_STORAGE') && SEPARATE_HISTORY_STORAGE == 1) {
+        $table_name = createHistoryTable($id);
+    } else {
+        $table_name = 'phistory';
+    }
         // Get data
-        $data = SQLSelectOne("SELECT COUNT(VALUE+0.0) AS VALUE FROM phistory ".
+        $data = SQLSelectOne("SELECT COUNT(VALUE+0.0) AS VALUE FROM $table_name ".
                 "WHERE VALUE != \"\" AND VALUE_ID='".$id."' AND ADDED>=('".date('Y-m-d H:i:s', $start_time)."') AND ADDED<=('".date('Y-m-d H:i:s', $stop_time)."')");
         if (!$data['VALUE'])
                 return false;
@@ -732,9 +770,13 @@ function getHistorySum($varname, $start_time, $stop_time = 0) {
         
         // Get hist val id
   $id = getHistoryValueId($varname);
-
+    if (defined('SEPARATE_HISTORY_STORAGE') && SEPARATE_HISTORY_STORAGE == 1) {
+        $table_name = createHistoryTable($id);
+    } else {
+        $table_name = 'phistory';
+    }
         // Get data
-        $data = SQLSelectOne("SELECT SUM(VALUE+0.0) AS VALUE FROM phistory ".
+        $data = SQLSelectOne("SELECT SUM(VALUE+0.0) AS VALUE FROM $table_name ".
                 "WHERE  VALUE != \"\" AND VALUE_ID='".$id."' AND ADDED>=('".date('Y-m-d H:i:s', $start_time)."') AND ADDED<=('".date('Y-m-d H:i:s', $stop_time)."')");
         if (!$data['VALUE'])
                 return false;
@@ -755,10 +797,22 @@ function getHistoryAvg($varname, $start_time, $stop_time = 0) {
         
         // Get hist val id
   $id = getHistoryValueId($varname);
+    if (defined('SEPARATE_HISTORY_STORAGE') && SEPARATE_HISTORY_STORAGE == 1) {
+        $table_name = createHistoryTable($id);
+    } else {
+        $table_name = 'phistory';
+    }
 
         // Get data
-        $data = SQLSelectOne("SELECT AVG(VALUE+0.0) AS VALUE FROM phistory ".
+        $data = SQLSelectOne("SELECT AVG(VALUE+0.0) AS VALUE FROM $table_name ".
                 "WHERE  VALUE != \"\" AND VALUE_ID='".$id."' AND ADDED>=('".date('Y-m-d H:i:s', $start_time)."') AND ADDED<=('".date('Y-m-d H:i:s', $stop_time)."')");
+
+        if (!$data['VALUE']) {
+            $data = SQLSelectOne("SELECT VALUE+0.0 FROM $table_name ".
+                "WHERE  VALUE != \"\" AND VALUE_ID='".$id."' AND ADDED<('".date('Y-m-d H:i:s', $start_time)."') ORDER BY ADDED DESC LIMIT 1");
+        }
+
+
         if (!$data['VALUE'])
                 return false;
         
@@ -776,12 +830,18 @@ function getHistoryValue($varname, $time, $nerest = false) {
         
         // Get hist val id
   $id = getHistoryValueId($varname);
-        
-        // Get val before
-        $val1 = SQLSelectOne("SELECT VALUE, UNIX_TIMESTAMP(ADDED) AS ADDED FROM phistory WHERE VALUE_ID='".$id."' AND ADDED<=('".date('Y-m-d H:i:s', $time)."') ORDER BY ADDED DESC LIMIT 1");
+
+    if (defined('SEPARATE_HISTORY_STORAGE') && SEPARATE_HISTORY_STORAGE == 1) {
+        $table_name = createHistoryTable($id);
+    } else {
+        $table_name = 'phistory';
+    }
+
+    // Get val before
+        $val1 = SQLSelectOne("SELECT VALUE, UNIX_TIMESTAMP(ADDED) AS ADDED FROM $table_name WHERE VALUE_ID='".$id."' AND ADDED<=('".date('Y-m-d H:i:s', $time)."') ORDER BY ADDED DESC LIMIT 1");
         
         // Get val after        
-        $val2 = SQLSelectOne("SELECT VALUE, UNIX_TIMESTAMP(ADDED) AS ADDED FROM phistory WHERE VALUE_ID='".$id."' AND ADDED>=('".date('Y-m-d H:i:s', $time)."') ORDER BY ADDED LIMIT 1");
+        $val2 = SQLSelectOne("SELECT VALUE, UNIX_TIMESTAMP(ADDED) AS ADDED FROM $table_name WHERE VALUE_ID='".$id."' AND ADDED>=('".date('Y-m-d H:i:s', $time)."') ORDER BY ADDED LIMIT 1");
         
         // Not found values
         if ((!$val1['VALUE']) && (!$val2['VALUE']))     
@@ -821,6 +881,7 @@ function getHistoryValue($varname, $time, $nerest = false) {
  */
 function setGlobal($varname, $value, $no_linked = 0, $source = '')
 {
+
    $tmp = explode('.', $varname);
 
    if (isset($tmp[2]))
@@ -883,6 +944,35 @@ function callMethod($method_name, $params = 0)
    {
       return 0;
    }
+}
+
+function callMethodSafe($method_name, $params = 0)
+{
+    $tmp = explode('.', $method_name);
+    if (IsSet($tmp[2]))
+    {
+        $object_name = $tmp[0] . '.' . $tmp[1];
+        $varname     = $tmp[2];
+    }
+    elseif (IsSet($tmp[1]))
+    {
+        $object_name = $tmp[0];
+        $method_name = $tmp[1];
+    }
+    else
+    {
+        $object_name = 'ThisComputer';
+    }
+    $obj = getObject($object_name);
+
+    if ($obj)
+    {
+        return $obj->callMethodSafe($method_name, $params);
+    }
+    else
+    {
+        return 0;
+    }
 }
 
 function injectObjectMethodCode($method_name,$key,$code) {
@@ -980,7 +1070,7 @@ function processTitle($title, $object = 0)
          }
          else
          {
-            $jTempl = new jTemplate($title, $data, $this);
+            $jTempl = new jTemplate($title, $data);
          }
 
          $title = $jTempl->result;
@@ -989,7 +1079,6 @@ function processTitle($title, $object = 0)
       }
 
       $title = preg_replace('/%rand%/is', rand(), $title);
-
 
       $title=preg_replace('/%([\w\d\.]+?)\.([\w\d\.]+?)\|(\d+)%/uis', '%\1.\2%', $title);
       
@@ -1015,20 +1104,29 @@ function processTitle($title, $object = 0)
          for ($i = 0; $i < $total; $i++)
          {
             $data=getGlobal($m[1][$i] . '.' . $m[2][$i]);
+            if ($data == '') $data = 0;
             $descr=$m[3][$i];
             $tmp=explode(';', $descr);
             $totald=count($tmp);
             $hsh=array();
-            for($id=0;$id<$totald;$id++) {
-             $item=trim($tmp[$id]);
-             if (preg_match('/(.+?)=(.+)/uis', $item, $md)) {
-              $search_value=$md[1];
-              $search_replace=$md[2];
-             } else {
-              $search_value=$id;
-              $search_replace=$item;
-             }
-             $hsh[$search_value]=$search_replace;
+            if ($totald==1) {
+                if ($data!='') {
+                    $hsh[$data]=$descr;
+                } else {
+                    $hsh[$data]='';
+                }
+            } else {
+                for($id=0;$id<$totald;$id++) {
+                    $item=trim($tmp[$id]);
+                    if (preg_match('/(.+?)=(.+)/uis', $item, $md)) {
+                        $search_value=$md[1];
+                        $search_replace=$md[2];
+                    } else {
+                        $search_value=$id;
+                        $search_replace=$item;
+                    }
+                    $hsh[$search_value]=$search_replace;
+                }
             }
             $title = str_replace($m[0][$i], $hsh[$data], $title);
          }
@@ -1156,6 +1254,24 @@ function getRoomObjectByLocation($location_id,$auto_add=0) {
         $object_id=addClassObject("Rooms",$location_title);
         SQLExec("UPDATE objects SET LOCATION_ID=".(int)$location_rec['ID'].", DESCRIPTION='".DBSafe($location_rec['TITLE'])."' WHERE ID=".$object_id);
         return $location_title;
+    } else {
+        return '';
+    }
+}
+
+function getUserObjectByTitle($user_id,$auto_add=0) {
+    $user_rec=SQLSelectOne("SELECT * FROM users WHERE ID=".(int)$user_id);
+    $user_title=transliterate($user_rec['USERNAME']);
+    $user_title=preg_replace('/\W/','',$user_title);
+    if (!$user_title) {
+        $user_title='User'.$user_id;
+    }
+    $user_object=SQLSelectOne("SELECT * FROM objects WHERE (TITLE LIKE '".DBSafe($user_title)."' OR (DESCRIPTION!='' AND DESCRIPTION LIKE '".$user_rec['NAME']."'))");
+    if ($user_object['ID']) return $user_object['TITLE'];
+    if ($auto_add) {
+        $object_id=addClassObject("Users",$user_title);
+        SQLExec("UPDATE objects SET DESCRIPTION='".DBSafe($user_rec['NAME'])."' WHERE ID=".$object_id);
+        return $user_title;
     } else {
         return '';
     }

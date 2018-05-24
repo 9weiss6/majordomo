@@ -9,6 +9,10 @@
 
 chdir(dirname(__FILE__));
 
+if (file_exists('./reboot'))
+   unlink('./reboot');
+
+
 include_once("./config.php");
 include_once("./lib/loader.php");
 include_once("./lib/threads.php");
@@ -28,15 +32,79 @@ while (!$connected)
    sleep(5);
 }
 
-if (file_exists('./reboot'))
-   unlink('./reboot');
-
 // connecting to database
 $db = new mysql(DB_HOST, '', DB_USER, DB_PASSWORD, DB_NAME);
+include_once("./load_settings.php");
 
 echo "CONNECTED TO DB" . PHP_EOL;
 
-echo "Running startup maintenance" . PHP_EOL;
+$old_mask = umask(0);
+if (is_dir(ROOT.'cached')) {
+   DebMes("Removing cache from ".ROOT.'cached');
+   removeTree(ROOT.'chached');
+}
+if (is_dir(ROOT.'cms/cached')) {
+   DebMes("Removing cache from ".ROOT.'cms/cached');
+   removeTree(ROOT.'cms/chached');
+}
+
+// moving some folders to ./cms/
+$move_folders=array(
+    'debmes',
+    'saverestore',
+    'sounds',
+    'texts');
+foreach($move_folders as $folder) {
+   if (is_dir(ROOT.$folder)) {
+      echo "Moving ".ROOT.$folder.' to '.ROOT.'cms/'.$folder."\n";
+      DebMes('Moving '.ROOT.$folder.' to '.ROOT.'cms/'.$folder);
+      copyTree(ROOT.$folder,ROOT.'cms/'.$folder);
+      removeTree(ROOT.$folder);
+   }
+}
+
+// removing some 3rd-party directories
+$check_folders=array(
+    'blockly' => '3rdparty/blockly',
+    'bootstrap' => '3rdparty/bootstrap',
+    'js/codemirror' => '3rdparty/codemirror',
+    'freeboard' => '3rdparty/freeboard',
+    'jquerymobile' => '3rdparty/jquerymobile',
+    'jpgraph' => '3rdparty/jpgraph',
+    'pdw' => '3rdparty/pdw',
+    'js/threejs' => '3rdparty/threejs'
+);
+foreach($check_folders as $k=>$v) {
+   if (is_dir(ROOT.$v)) {
+      echo "Removing ".ROOT.$k."\n";
+      DebMes('Removing '.ROOT.$k);
+      removeTree(ROOT.$k);
+   }
+}
+
+
+// check/recreate folders
+$dirs_to_check = array(
+    ROOT . 'backup',
+    ROOT . 'cms/debmes',
+    ROOT . 'cms/cached',
+    ROOT . 'cms/cached/voice',
+    ROOT . 'cms/cached/urls',
+    ROOT . 'cms/cached/templates_c',
+);
+
+if (defined('SETTINGS_BACKUP_PATH') && SETTINGS_BACKUP_PATH != '') {
+   $dirs_to_check[]=SETTINGS_BACKUP_PATH;
+}
+
+foreach ($dirs_to_check as $d) {
+   if (!is_dir($d)) {
+      mkdir($d, 0777);
+   } else {
+      chmod($d, 0777);
+   }
+}
+
 
 //restoring database backup (if was saving periodically)
 $filename  = ROOT . 'database_backup/db.sql';
@@ -50,9 +118,6 @@ if (file_exists($filename))
    $mysqlParam .= " " . DB_NAME . " <" . $filename;
    exec($mysql_path . $mysqlParam);
 }
-
-include_once("./load_settings.php");
-
 
 //reinstalling modules
 /*
@@ -89,12 +154,48 @@ $ctl = new control_modules();
 echo "Clearing the cache.\n";
 SQLExec("TRUNCATE TABLE `cached_values`");
 
+if (defined('SEPARATE_HISTORY_STORAGE') && SEPARATE_HISTORY_STORAGE==1) {
+   // split data into multiple tables
+   $phistory_values = SQLSelect("SELECT VALUE_ID, COUNT(*) as TOTAL FROM phistory GROUP BY VALUE_ID");
+   $total = count($phistory_values);
+   for($i=0;$i<$total;$i++) {
+      $value_id=$phistory_values[$i]['VALUE_ID'];
+      $total_data=$phistory_values[$i]['TOTAL'];
+      DebMes("Processing data for value $value_id ($total_data) ... ");
+      echo "Processing data for value $value_id ($total_data) ... ";
+      $table_name = createHistoryTable($value_id);
+      moveDataFromMainHistoryToTable($value_id);
+      DebMes("Processing of $value_id finished.");
+      echo "OK\n";
+   }
+} else {
+  //combine data into single table
+   $data=SQLSelect("SHOW TABLES;");
+   $tables=array();
+   foreach($data as $v) {
+      foreach($v as $k=>$v2) {
+         $tables[]=$v2;
+      }
+   }
+   foreach($tables as $table) {
+      if (preg_match('/phistory_value_(\d+)/',$table,$m)) {
+         $value_id=$m[1];
+         echo "Processing table: $table ($value_id) ...\n";
+         DebMes("Processing data for value $value_id ($table) ... ");
+         moveDataFromTableToMainHistory($value_id);
+         DebMes("Processing of $value_id finished.");
+         echo "OK\n";
+      }
+   }
+}
 
 // 1 second sleep
 sleep(1);
 
 // getting list of /scripts/cycle_*.php files to run each in separate thread
 $cycles = array();
+
+$reboot_timer=0;
 
 if (is_dir("./scripts"))
 {
@@ -134,8 +235,8 @@ foreach ($cycles as $path)
       }
 
 
-      DebMes("Starting " . $path . " ... ");
-      echo "Starting " . $path . " ... ";
+      DebMes("Starting " . $path . " ... ",'threads');
+      echo "Starting " . $path . " ... \n";
 
       if ((preg_match("/_X/", $path)))
       {
@@ -185,18 +286,18 @@ $last_restart=array();
 
 $last_cycles_control_check=time();
 
+$auto_restarts=array();
+$to_start=array();
+$to_stop=array();
+
+
 while (false !== ($result = $threads->iteration()))
 {
-
 
    if ((time()-$last_cycles_control_check)>=5) {
       $last_cycles_control_check=time();
 
-      $to_start=array();
-      $to_stop=array();
-      $to_restart=array();
       $auto_restarts=array();
-
       $qry="1 AND (TITLE LIKE 'cycle%Run' OR TITLE LIKE 'cycle%Control')";
       $cycles=SQLSelect("SELECT properties.* FROM properties WHERE $qry ORDER BY TITLE");
       $total = count($cycles);
@@ -216,51 +317,71 @@ while (false !== ($result = $threads->iteration()))
             $auto_restarts[]=$title;
          }
          if ($control!='') {
+            DebMes("Got control command '$control' for ".$title,'threads');
             if ($control=='stop') {
-               $to_stop[]=$title;
+               $to_stop[$title]=time();
             } elseif ($control=='start') {
-               $to_start[]=$title;
+               $to_start[$title]=time();
             } elseif ($control=='restart') {
-               $to_stop[]=$title;
-               $to_start[]=$title;
+               $to_stop[$title]=time();
+               $to_start[$title]=time()+5;
             }
             setGlobal($title.'Control','');
          }
 
       }
 
-      $some_closed=0;
-      $is_running=array();
-      foreach($threads->commandLines as $id=>$cmd) {
-         if (preg_match('/(cycle_.+?)\.php/is',$cmd,$m)) {
-            $title=$m[1];
-            if (in_array($title,$to_stop) || in_array($title,$to_restart)) {
-               DebMes("Closing service ".$title." (id: $id)");
-               $threads->closeThread($id);
-               $some_closed=1;
-            } else {
-               $is_running[]=$title;
-            }
+   }
+
+   $is_running=array();
+   foreach($threads->commandLines as $id=>$cmd) {
+      if (preg_match('/(cycle_.+?)\.php/is',$cmd,$m)) {
+         $title=$m[1];
+         $is_running[$title]=$id;
+      }
+   }
+
+   if (file_exists(ROOT.'reboot')) {
+      if (!$reboot_timer) {
+         $reboot_timer=time();
+      } elseif ((time()-$reboot_timer)>10) {
+         $reboot_timer=0;
+         //force close all running threads
+         DebMes("Force closing all running services.",'threads');
+         $to_start = array();
+         $restart_threads = array();
+         foreach($is_running as $k=>$v) {
+            $to_stop[$k]=time();
          }
       }
+   }
 
-      if ($some_closed) {
-         sleep(3);
+   foreach($to_stop as $title=>$tm) {
+      if ($tm<=time()) {
+         if (isset($is_running[$title])) {
+            $id =$is_running[$title];
+            DebMes("Force closing service ".$title." (id: ".$id.")",'threads');
+            $threads->closeThread($id);
+         }
+         unset($to_stop[$title]);
       }
+   }
 
-      foreach($to_start as $title) {
-         if (!in_array($title,$is_running)) {
+   foreach($to_start as $title=>$tm) {
+      if ($tm<=time()) {
+         if (!isset($is_running[$title])) {
             $cmd='./scripts/'.$title.'.php';
-            DebMes("Starting service ".$title.' ('.$cmd.')');
+            DebMes("Starting service ".$title.' ('.$cmd.')','threads');
             $pipe_id = $threads->newThread($cmd);
+            $is_running[$title]=$pipe_id;
          }
+         unset($to_stop[$title]);
+         unset($to_start[$title]);
       }
-
    }
 
    if (!empty($result))
    {
-      //echo "Res: " . $result . PHP_EOL . "---------------------" . PHP_EOL;
       $closePattern = '/THREAD CLOSED:.+?(\.\/scripts\/cycle\_.+?\.php)/is';
       if (preg_match_all($closePattern, $result, $matches) && !file_exists('./reboot'))
       {
@@ -268,37 +389,36 @@ while (false !== ($result = $threads->iteration()))
          for ($im = 0; $im < $total_m; $im++)
          {
             $closed_thread = $matches[1][$im];
+            $cycle_title = '';
             $need_restart=0;
             if (preg_match('/(cycle_.+?)\.php/is',$closed_thread,$m)) {
-               $title=$m[1];
-               setGlobal($title.'Run','');
-               if (in_array($title,$auto_restarts)) {
+               $cycle_title=$m[1];
+               DebMes("Thread closed: " . $cycle_title,'threads');
+               unset($to_stop[$cycle_title]);
+               setGlobal($cycle_title.'Run','');
+               if (in_array($cycle_title,$auto_restarts)) {
                   $need_restart=1;
                }
             }
             foreach ($restart_threads as $item)
             {
-               if (preg_match('/' . $item . '/is', $closed_thread) && (!$last_restart[$closed_thread] || (time()-$last_restart[$closed_thread])>30))
-               {
-                  //restart
+               if (preg_match('/' . $item . '/is', $closed_thread)) {
                   $need_restart=1;
-                  $last_restart[$closed_thread]=time();
                }
             }
-            if ($need_restart) {
-               DebMes("AUTO-RECOVERY: " . $closed_thread);
+            if ($need_restart && $cycle_title) {
+               DebMes("AUTO-RECOVERY: " . $closed_thread,'threads');
                if (!preg_match('/websockets/is', $closed_thread)) {
-                  registerError('cycle_stop', $closed_thread);
+                  registerError('cycle_stop', $closed_thread."\n".$result);
                }
-               $pipe_id = $threads->newThread($closed_thread);
+               $to_start[$cycle_title]=time()+5;
+               //$pipe_id = $threads->newThread($closed_thread);
             }
          }
       }
    }
 }
 
-
  unlink('./reboot');
-
  // closing database connection
  $db->Disconnect();

@@ -19,7 +19,7 @@ class webvars extends module {
 *
 * @access private
 */
-function webvars() {
+function __construct() {
   $this->name="webvars";
   $this->title="<#LANG_MODULE_WEBVARS#>";
   $this->module_category="<#LANG_SECTION_OBJECTS#>";
@@ -324,7 +324,7 @@ function usual(&$out) {
 
     if ($run_script_id) {
      //run script
-     runScript($run_script_id, $params);
+     runScriptSafe($run_script_id, $params);
     } elseif ($run_code) {
      //run code
                   try {

@@ -40,7 +40,7 @@ $scale_fontsize=8;
 $threshold_fontsize=6;
 $w_delta=80;
 $px_per_point=6;
-$unit="�C";
+$unit="°C";
 $end_time=time();
 $approx='avg';
 $fil01=0;
@@ -60,6 +60,10 @@ if ($_GET['px']) $px_per_point=(int)$_GET['px'];
 // Dataset definition   
 $DataSet = new pData;
 
+if (is_array($p)) {
+    $p=$p[0];
+}
+
 if ($p!='') {
         if (preg_match('/(.+)\.(.+)/is', $p, $m)) {
                 $obj=getObject($m[1]);
@@ -67,6 +71,7 @@ if ($p!='') {
         }
 }
 
+$property = SQLSelectOne("SELECT * FROM properties WHERE ID=".(int)$prop_id);
 $pvalue=SQLSelectOne("SELECT * FROM pvalues WHERE PROPERTY_ID='".$prop_id."' AND OBJECT_ID='".$obj->id."'");
 
 if (!$pvalue['ID']) {
@@ -77,6 +82,10 @@ if (!$pvalue['ID']) {
 if ($_GET['op']=='value') {
         echo $pvalue['VALUE'];
         exit;
+}
+
+if (!$type) {
+ $type = '7d';
 }
 
 if (preg_match('/(\d+)d/', $type, $m)) {
@@ -105,7 +114,37 @@ if ($total>0) {
         $px_passed=0;
         $dt=date('Y-m-d', $start_time);
 
-        $history=SQLSelect("SELECT ID, VALUE, UNIX_TIMESTAMP(ADDED) as UNX, ADDED FROM phistory WHERE VALUE_ID='".$pvalue['ID']."' AND ADDED>=('".date('Y-m-d H:i:s', $start_time)."') AND ADDED<=('".date('Y-m-d H:i:s', $end_time)."') ORDER BY ADDED");
+        if (defined('SEPARATE_HISTORY_STORAGE') && SEPARATE_HISTORY_STORAGE == 1) {
+                $history_table = createHistoryTable($pvalue['ID']);
+        } else {
+                $history_table = 'phistory';
+        }
+
+        if ($end_time == $start_time) {
+            $history = array();
+        } else {
+            $history=SQLSelect("SELECT ID, VALUE, ADDED FROM $history_table WHERE VALUE_ID='".$pvalue['ID']."' AND ADDED>=('".date('Y-m-d H:i:s', $start_time)."') AND ADDED<=('".date('Y-m-d H:i:s', $end_time)."')"); // ORDER BY ADDED
+            if (!$history[0]['ID'] && $op == 'log') {
+                $history = SQLSelect("SELECT ID, VALUE, ADDED FROM $history_table WHERE VALUE_ID='" . $pvalue['ID'] . "' ORDER BY ADDED DESC LIMIT 20");
+                $history = array_reverse($history);
+            }
+
+            if ($history[0]['ID']) {
+                $total = count($history);
+                for($i=0;$i<$total;$i++) {
+                    $history[$i]['UNX']=strtotime($history[$i]['ADDED']);
+                }
+                usort($history,function($a,$b) {
+                    if ($a['UNX'] == $b['UNX']) {
+                        return 0;
+                    }
+                    return ($a['UNX'] < $b['UNX']) ? -1 : 1;
+                });
+            }
+        }
+
+    //echo "test";exit;
+
         $total_values=count($history);
         $start_time=$history[0]['UNX'];
 
@@ -128,21 +167,32 @@ if ($total>0) {
          if ($total_values>0) {
           if ($_GET['subop']=='clear') {
            if (!$_GET['id']) {
-            SQLExec("DELETE FROM phistory WHERE VALUE_ID='".$pvalue['ID']."'");
+                   $values=SQLSelect("SELECT * FROM $history_table WHERE VALUE_ID='".$pvalue['ID']."'");
+                   $total = count($values);
+                   for ($i = 0; $i < $total; $i++) {
+                           if ($property['DATA_TYPE']==5) {
+                                 @unlink(ROOT.'cms/images/'.$values[$i]['VALUE']);
+                           }
+                   }
+                   SQLExec("DELETE FROM $history_table WHERE VALUE_ID='".$pvalue['ID']."'");
            } else {
-            SQLExec("DELETE FROM phistory WHERE VALUE_ID='".$pvalue['ID']."' AND ID='".(int)$_GET['id']."'");
+            $value=SQLSelectOne("SELECT * FROM $history_table WHERE VALUE_ID='".$pvalue['ID']."' AND ID='".(int)$_GET['id']."'");
+            if ($property['DATA_TYPE']==5) {
+              @unlink(ROOT.'cms/images/'.$value['VALUE']);
+            }
+            SQLExec("DELETE FROM $history_table WHERE VALUE_ID='".$pvalue['ID']."' AND ID='".(int)$_GET['id']."'");
            }
            header('Location:'.str_replace('&subop=clear', '', $_SERVER['REQUEST_URI']));
            exit;
           }
           //OPTIMIZE_LOG
           if ($_GET['subop']=='optimize') {
-           $data=SQLSelect("SELECT * FROM phistory WHERE VALUE_ID='".$pvalue['ID']."' ORDER BY ADDED DESC");
+           $data=SQLSelect("SELECT * FROM $history_table WHERE VALUE_ID='".$pvalue['ID']."' ORDER BY ADDED DESC");
            $total=count($data);
            $old_value=$data[0]['VALUE'];
            for($i=1;$i<$total;$i++) {
             if ($data[$i]['VALUE']==$old_value) {
-             SQLExec("DELETE FROM phistory WHERE ID='".$data[$i]['ID']."'");
+             SQLExec("DELETE FROM $history_table WHERE ID='".$data[$i]['ID']."'");
             } else {
              $old_value=$data[$i]['VALUE'];
             }
@@ -150,21 +200,55 @@ if ($total>0) {
            header('Location:'.str_replace('&subop=optimize', '', $_SERVER['REQUEST_URI']));
            exit;
           }
+
+                 echo "<table width=100%><tr><td width='99%'>";
+
+          $_SERVER['REQUEST_URI']=preg_replace('/&subop=(\w+)/','',$_SERVER['REQUEST_URI']);
           echo '<a href="'.$_SERVER['REQUEST_URI'].'&subop=">H</a> ';
           echo ' | <a href="'.$_SERVER['REQUEST_URI'].'&subop=1h">1h</a> ';
           echo ' | <a href="'.$_SERVER['REQUEST_URI'].'&subop=24h">24h</a> ';
           echo ' | <a href="'.$_SERVER['REQUEST_URI'].'&subop=7d">7d</a> ';
           echo ' | <a href="'.$_SERVER['REQUEST_URI'].'&subop=31d">31d</a> ';
-          echo ' | <a href="'.$_SERVER['REQUEST_URI'].'&subop=clear" onClick="return confirm(\''.LANG_ARE_YOU_SURE.'\')">'.LANG_CLEAR_ALL.'</a>';
-          echo ' | <a href="'.$_SERVER['REQUEST_URI'].'&subop=optimize" onClick="return confirm(\''.LANG_ARE_YOU_SURE.'\')">'.LANG_OPTIMIZE_LOG.'</a> ';
-          echo '<br/>';
-          if ($_GET['subop']=='1h' || $_GET['subop']=='24h' || $_GET['subop']=='7d' || $_GET['subop']=='31d') {
+          if (!$_GET['minimal']) {
+              echo ' | <a href="'.$_SERVER['REQUEST_URI'].'&subop=clear" onClick="return confirm(\''.LANG_ARE_YOU_SURE.'\')">'.LANG_CLEAR_ALL.'</a>';
+              echo ' | <a href="'.$_SERVER['REQUEST_URI'].'&subop=optimize" onClick="return confirm(\''.LANG_ARE_YOU_SURE.'\')">'.LANG_OPTIMIZE_LOG.'</a> ';
+          }
+                 echo "</td>";
+             if (!$_GET['minimal']) {
+                 echo "<td>";
+                 echo '<a href="javascript:window.close();">X</a>';
+                 echo "</td>";
+             }
+             echo "</tr></table>";
+          //echo '<br/>';
+
+          if (preg_match('/^\d+\w$/',$_GET['subop'])) {
+
            if (file_exists(DIR_MODULES.'charts/charts.class.php')) {
-            $code='<iframe src="'.ROOTHTML.'module/charts.html?id=config&period='.$_GET['subop'].'&property='.urlencode($_GET['p']).'" width=100% height=400></iframe>';
+
+               $height = 400;
+               if ($_GET['minimal']) {
+                   $height = 500;
+               }
+
+
+               if (!is_array($_GET['p'])) {
+                $code='<iframe src="'.ROOTHTML.'module/charts.html?id=config&period='.$_GET['subop'].'&chart_type='.urlencode($_GET['chart_type']).'&property='.urlencode($_GET['p']).'&height='.$height.'" width=100% height='.($height).'></iframe>';
+               } else {
+                   $p_url='';
+                   foreach($_GET['p'] as $p) {
+                       $p_url.='&properties[]='.urlencode($p);
+                   }
+                   $p_url.='&height='.$height;
+                   $code='<iframe src="'.ROOTHTML.'module/charts.html?id=config&period='.$_GET['subop'].'&chart_type='.urlencode($_GET['chart_type']).$p_url.'" width=100% height='.$height.'></iframe>';
+               }
            } else {
-            $code='<img src="/jpgraph/?p='.$_GET['p'].'&type='.$_GET['subop'].'&width=500&"/>';
+            $code='<img src="'.ROOTHTML.'3rdparty/jpgraph/?p='.$p.'&type='.$_GET['subop'].'&width=500&"/>';
            }
-           echo $code."<br/>".htmlspecialchars($code);
+           echo $code;
+              if (!$_GET['minimal']) {
+                  echo "<br/>".htmlspecialchars($code);
+              }
            exit;
           }
          }
@@ -177,7 +261,11 @@ if ($total>0) {
                         //echo date('Y-m-d H:i:s', $history[$i]['UNX']);
                         echo $history[$i]['ADDED'];
                         echo ": <b>";
-                        echo htmlspecialchars($history[$i]['VALUE'])."</b>";
+                        if ($property['DATA_TYPE']==5) {
+                           echo "<a href='".ROOTHTML."cms/images/".$history[$i]['VALUE']."' target='_blank'><img src='".ROOTHTML."cms/images/".$history[$i]['VALUE']."' height=100></a>";
+                        } else {
+                           echo htmlspecialchars($history[$i]['VALUE'])."</b>";
+                        }
                         if ($history[$i]['SOURCE']) {
                          echo ' ('.$history[$i]['SOURCE'].')';
                         }
@@ -185,7 +273,7 @@ if ($total>0) {
                         echo "<br/>";
                 }
                 if (!$_GET['full']) {
-                        echo ' <br/><a href="'.$_SERVER['REQUEST_URI'].'&full=1">Load all values</a> ';
+                        echo ' <br/><a href="'.$_SERVER['REQUEST_URI'].'&type=1&full=1">Load all values</a> ';
                 }
                 exit;
         }
@@ -593,7 +681,7 @@ if ($_GET['gtype']=='curve') { //������ ��������� 
   }
 
 /* Render the picture (choose the best way) */
-$path_to_file='./cached/'.md5($_SERVER['REQUEST_URI']).'.png';
+$path_to_file='./cms/cached/'.md5($_SERVER['REQUEST_URI']).'.png';
 imagepng($Test->autoOutput($path_to_file));
 
 if (file_exists($path_to_file)) {

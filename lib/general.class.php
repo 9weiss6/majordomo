@@ -25,7 +25,7 @@ if (defined('HOME_NETWORK') && HOME_NETWORK != '' && !isset($argv[0])
 
    $remoteAddr = getenv('HTTP_X_FORWARDED_FOR') ? getenv('HTTP_X_FORWARDED_FOR') : $_SERVER["REMOTE_ADDR"];
 
-   if (!preg_match('/' . $p . '/is', $remoteAddr) && $remoteAddr != '127.0.0.1')
+   if (!preg_match('/' . $p . '/is', $remoteAddr) && $remoteAddr != '127.0.0.1' && trim($remoteAddr)!= '::1')
    {
       // password required
       //echo "password required for ".$remoteAddr;exit;
@@ -124,6 +124,20 @@ if (isset($_SERVER['REQUEST_METHOD']))
          ${"$k" . "_name"} = $_FILES[$k]['name'];
       }
    }
+}
+
+
+function gr($var_name,$type='') {
+   $value = $_REQUEST[$var_name];
+   if (get_magic_quotes_gpc()) {
+      stripit($value);
+   }
+   if ($type=='int') {
+      $value=(int)$value;
+   } elseif ($type=='float') {
+      $value=(float)$value;
+   }
+   return $value;
 }
 
 /**
@@ -516,7 +530,7 @@ function DebMes($errorMessage, $logLevel = "debug")
    if (defined('LOG_DIRECTORY') && LOG_DIRECTORY!='') {
     $path=LOG_DIRECTORY;
    } else {
-    $path = ROOT . 'debmes';
+    $path = ROOT . 'cms/debmes';
    }
 
    // DEBUG MESSAGE LOG
@@ -668,13 +682,13 @@ function colorizeArray(&$ar, $every = 2)
  */
 function clearCache($verbose = 0)
 {
-   if ($handle = opendir(ROOT . 'cached'))
+   if ($handle = opendir(ROOT . 'cms/cached'))
    {
       while (false !== ($file = readdir($handle)))
       {
-         if (is_file(ROOT . 'cached/' . $file))
+         if (is_file(ROOT . 'cms/cached/' . $file))
          {
-            @unlink(ROOT . 'cached/' . $file);
+            @unlink(ROOT . 'cms/cached/' . $file);
 
             if ($verbose)
             {

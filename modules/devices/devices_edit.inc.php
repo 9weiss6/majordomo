@@ -59,7 +59,7 @@
       //print_r($properties);exit;
      if ($rec['LINKED_OBJECT'] && is_array($properties)) {
          $res_properties=array();
-
+         $onchanges = array();
          foreach($properties as $k=>$v) {
              if ($v['_CONFIG_TYPE']) {
                  if ($this->mode=='update') {
@@ -68,8 +68,12 @@
                       setGlobal($rec['LINKED_OBJECT'].'.'.$k,trim(${$k.'_value'}));
                      }
                      $out['OK']=1;
+                     if ($v['ONCHANGE']!='') {
+                         $onchanges[$v['ONCHANGE']]=1;
+                     }
                  }
                  $v['NAME']=$k;
+                 if (isset($v['_CONFIG_HELP'])) $v['CONFIG_HELP']=$v['_CONFIG_HELP'];
                  $v['CONFIG_TYPE']=$v['_CONFIG_TYPE'];
                  $v['VALUE']=getGlobal($rec['LINKED_OBJECT'].'.'.$k);
                  if ($v['CONFIG_TYPE']=='select') {
@@ -85,8 +89,18 @@
                          }
                          $v['OPTIONS'][]=array('VALUE'=>$value,'TITLE'=>$title);
                      }
+                 } elseif ($v['CONFIG_TYPE']=='style_image') {
+                     include_once(DIR_MODULES.'scenes/scenes.class.php');
+                     $scene_class = new scenes();
+                     $styles = $scene_class->getAllTypes();
+                     $v['FOLDERS']=$styles;
                  }
                  $res_properties[]=$v;
+             }
+         }
+         if ($this->mode=='update') {
+             foreach($onchanges as $k=>$v) {
+                 callMethod($rec['LINKED_OBJECT'].'.'.$k);
              }
          }
          //print_r($res_properties);exit;
@@ -150,6 +164,11 @@
       global $type;
       $out['TYPE']=$type;
       global $linked_object;
+      if ($linked_object!='') {
+          if (!getObject($linked_object)) {
+              $linked_object='';
+          }
+      }
       $out['LINKED_OBJECT']=trim($linked_object);
       if ($out['LINKED_OBJECT'] && !$rec['ID']) {
           $old_rec=SQLSelectOne("SELECT * FROM devices WHERE LINKED_OBJECT LIKE '".DBSafe($out['LINKED_OBJECT'])."'");
@@ -161,6 +180,20 @@
       if ($add_title) {
           $out['TITLE']=$add_title;
       }
+
+      if ($out['SOURCE_TABLE'] && !$rec['ID']) {
+          $qry_devices=1;
+          if ($out['TYPE']) {
+              $qry_devices.=" AND devices.TYPE='".DBSafe($out['TYPE'])."'";
+          }
+          $existing_devices=SQLSelect("SELECT ID, TITLE FROM devices WHERE $qry_devices ORDER BY TITLE");
+          if ($existing_devices[0]['ID']) {
+              $out['SELECT_EXISTING']=1;
+              $out['EXISTING_DEVICES']=$existing_devices;
+          }
+      }
+
+
   }
 
   if ($this->tab=='links') {
@@ -184,6 +217,9 @@
 
       global $location_id;
       $rec['LOCATION_ID']=(int)$location_id;
+
+      global $favorite;
+      $rec['FAVORITE']=(int)$favorite;
 
     $rec['LINKED_OBJECT']=$linked_object;
       if ($rec['LINKED_OBJECT'] && !$rec['ID']) {
@@ -285,6 +321,27 @@
   }
   outHash($rec, $out);
 
+$show_methods=array();
+ if ($rec['TYPE']!='') {
+     $methods=$this->getAllMethods($rec['TYPE']);
+     if (is_array($methods)) {
+         foreach($methods as $k=>$v) {
+             if ($v['_CONFIG_SHOW']) {
+                 $v['NAME']=$k;
+                 $show_methods[]=$v;
+             }
+         }
+     }
+ }
+ if (isset($show_methods[0])) {
+     usort($show_methods,function($a,$b) {
+         if ($a['_CONFIG_SHOW'] == $b['_CONFIG_SHOW']) {
+             return 0;
+         }
+         return ($a['_CONFIG_SHOW'] > $b['_CONFIG_SHOW']) ? -1 : 1;
+     });
+     $out['SHOW_METHODS']=$show_methods;
+ }
 
   $types=array();
   foreach($this->device_types as $k=>$v) {
